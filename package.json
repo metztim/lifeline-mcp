@@ -1,0 +1,24 @@
+{
+  "name": "lifeline-mcp",
+  "version": "0.1.0",
+  "description": "MCP server and CLI for Lifeline productivity tracker",
+  "type": "module",
+  "bin": {
+    "lifeline-mcp": "./dist/cli.js"
+  },
+  "main": "./dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server.js"
+  },
+  "keywords": ["mcp", "lifeline", "productivity", "pomodoro"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
