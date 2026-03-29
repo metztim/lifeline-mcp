@@ -9,6 +9,7 @@ import {
   stopSession,
   startBreak,
   startMeeting,
+  localDateStr,
 } from "./lifeline.js";
 
 function formatSeconds(s: number): string {
@@ -19,13 +20,13 @@ function formatSeconds(s: number): string {
 }
 
 function today(): string {
-  return new Date().toISOString().split("T")[0];
+  return localDateStr();
 }
 
 function daysAgo(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() - n);
-  return d.toISOString().split("T")[0];
+  return localDateStr(d);
 }
 
 async function cmdStatus() {

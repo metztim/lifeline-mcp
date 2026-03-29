@@ -15,6 +15,7 @@ import {
   stopSession,
   startBreak,
   startMeeting,
+  localDateStr,
 } from "./lifeline.js";
 
 const server = new Server(
@@ -136,7 +137,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case "get_day": {
-      const date = (args?.date as string) || new Date().toISOString().split("T")[0];
+      const date = (args?.date as string) || localDateStr();
       const day = await readDay(date);
       if (!day) {
         return { content: [{ type: "text", text: `No activity data for ${date}.` }] };
@@ -152,7 +153,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case "get_summary": {
-      const from = (args?.from as string) || new Date().toISOString().split("T")[0];
+      const from = (args?.from as string) || localDateStr();
       const to = (args?.to as string) || from;
       const days = await readRange(from, to);
       const summary = computeSummary(days);

@@ -70,6 +70,14 @@ const MILESTONE_MAP: Record<number, string> = {
   86404: "customCycle",
 };
 
+/** Format a Date as YYYY-MM-DD in the user's local timezone */
+export function localDateStr(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 async function getActivityPath(): Promise<string> {
   try {
     await readdir(ACTIVITY_PATH);
@@ -104,7 +112,7 @@ function parseRawDay(raw: any): DayActivity {
   if (raw.date != null) {
     const CF_EPOCH = new Date("2001-01-01T00:00:00Z").getTime();
     const d = new Date(CF_EPOCH + raw.date * 1000);
-    dateStr = d.toISOString().split("T")[0];
+    dateStr = localDateStr(d);
   }
 
   return { date: dateStr, nodes, milestones, activePeriods, achievements: raw.achievements };
@@ -131,12 +139,15 @@ export async function readRange(
   to: string
 ): Promise<DayActivity[]> {
   const days: DayActivity[] = [];
-  const start = new Date(from);
-  const end = new Date(to);
+  // Parse as local dates (noon avoids DST edge cases)
+  const [fy, fm, fd] = from.split("-").map(Number);
+  const [ty, tm, td] = to.split("-").map(Number);
+  const start = new Date(fy, fm - 1, fd, 12);
+  const end = new Date(ty, tm - 1, td, 12);
   const current = new Date(start);
 
   while (current <= end) {
-    const dateStr = current.toISOString().split("T")[0];
+    const dateStr = localDateStr(current);
     const day = await readDay(dateStr);
     if (day) days.push(day);
     current.setDate(current.getDate() + 1);
