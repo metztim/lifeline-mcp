@@ -233,7 +233,7 @@ async function runAppleScript(script: string): Promise<string> {
 }
 
 export async function getStatus(): Promise<Record<string, any>> {
-  const script = 'tell application "Lifeline" to get status';
+  const script = 'tell application "Lifeline" to fetch status';
   try {
     const result = await runAppleScript(script);
     return parseAppleScriptRecord(result);
