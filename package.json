@@ -4,6 +4,7 @@
   "description": "MCP server and CLI for Lifeline productivity tracker",
   "type": "module",
   "bin": {
+    "lifeline": "./dist/cli.js",
     "lifeline-mcp": "./dist/cli.js"
   },
   "main": "./dist/server.js",
