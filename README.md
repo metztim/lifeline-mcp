@@ -2,77 +2,102 @@
 
 MCP server and CLI for [Lifeline](https://apps.apple.com/app/id1526186940), the macOS productivity tracker.
 
-Read your session history, break patterns, and pomodoro stats from any AI tool (Claude, Claude Code, ChatGPT) or the command line. Control Lifeline remotely: start/stop sessions with labels and emojis.
+Read your session history, break patterns, and pomodoro stats from any AI tool (Claude, Claude Code, ChatGPT) or the command line. Control Lifeline remotely: start and stop sessions, take breaks, log meetings.
 
-## Install
+## Quick start
+
+### Claude Code (one command)
+
+```bash
+claude mcp add lifeline -- npx lifeline-mcp
+```
+
+That's it. Claude Code can now read your Lifeline data and control sessions.
+
+### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "lifeline": {
+      "command": "npx",
+      "args": ["lifeline-mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop after saving.
+
+### Other AI tools
+
+Any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io) can use this server. Point it at `npx lifeline-mcp`.
+
+### CLI only
 
 ```bash
 npm install -g lifeline-mcp
 ```
 
-## MCP server setup
+## What you can do
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+### Ask your AI tool about your work patterns
 
-```json
-{
-  "mcpServers": {
-    "lifeline": {
-      "command": "npx",
-      "args": ["lifeline-mcp"]
-    }
-  }
-}
-```
+- "How many pomodoros did I complete this week?"
+- "Show me my session history for today"
+- "What's my average session length this month?"
+- "When did I last take a break? How much break debt do I have?"
+- "Compare my Monday and Friday productivity"
+- "Which session labels do I use most?"
 
-For Claude Code, add to `.claude/settings.json`:
+### Control Lifeline from your AI tool
 
-```json
-{
-  "mcpServers": {
-    "lifeline": {
-      "command": "npx",
-      "args": ["lifeline-mcp"]
-    }
-  }
-}
-```
+- "Start a 45-minute deep work session"
+- "I'm going into a meeting with Nathan"
+- "Stop my session"
+- "Time for a break"
 
-## CLI usage
+### Use the CLI for quick checks
 
 ```bash
-lifeline-mcp status                    # Current status
-lifeline-mcp summary                   # Today's summary
-lifeline-mcp summary --week            # Past 7 days
-lifeline-mcp summary --month           # Past 30 days
-lifeline-mcp day                       # Today's full timeline
-lifeline-mcp day 2026-03-15            # Specific day
-lifeline-mcp sessions --week           # All sessions this week
-
-lifeline-mcp start "Deep work" --emoji 🧠 --duration 45
-lifeline-mcp stop
-lifeline-mcp break
-lifeline-mcp meeting "Standup" --emoji 📞 --duration 30
+lifeline status                    # What's happening right now
+lifeline summary                   # Today's stats
+lifeline summary --week            # Past 7 days
+lifeline summary --month           # Past 30 days
+lifeline day                       # Today's full timeline
+lifeline day 2026-03-15            # Specific day
+lifeline sessions --week           # All sessions this week
 ```
 
-## MCP tools
+### Automate with the CLI
+
+```bash
+lifeline start "Deep work" --emoji 🧠 --duration 45
+lifeline stop
+lifeline break
+lifeline meeting "Standup" --emoji 📞 --duration 30
+```
+
+## MCP tools reference
 
 | Tool | Description |
 |---|---|
-| `get_status` | Current state, session info, break debt, pomodoro count |
+| `get_status` | Current state, active session info, break debt, pomodoro count |
 | `get_day` | Full day activity with timeline, milestones, active periods |
 | `get_range` | Activity data for a date range |
 | `get_summary` | Computed stats: work time, sessions, pomodoros, labels |
-| `start_session` | Start a session (optional: title, emoji, duration, strict) |
+| `start_session` | Start a session (optional: title, emoji, duration, strict mode) |
 | `stop_session` | Stop current session or meeting |
 | `start_break` | Start a break |
 | `start_meeting` | Start a meeting (optional: title, emoji, duration) |
 
 ## How it works
 
-**Reading data:** The tool reads Lifeline's activity JSON files directly from disk. These are stored in the app's sandbox container and contain your full session history.
+**Reading data:** Reads Lifeline's activity JSON files directly from the app's sandbox container (`~/Library/Containers/com.saent.lifeline/`). No network requests, no API keys — your data stays local.
 
-**Controlling Lifeline:** Write commands (start/stop/break) use AppleScript to communicate with the running Lifeline app. Lifeline must be running for these commands to work.
+**Controlling Lifeline:** Write commands (start, stop, break, meeting) use AppleScript to communicate with the running Lifeline app. Lifeline must be running for these commands to work.
 
 ## Requirements
 
