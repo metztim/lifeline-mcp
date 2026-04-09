@@ -5,6 +5,7 @@ import {
   readDay,
   readRange,
   computeSummary,
+  getLabels,
   startSession,
   stopSession,
   startBreak,
@@ -129,6 +130,26 @@ async function cmdSessions(from: string, to: string) {
   }
 }
 
+async function cmdLabels(from?: string, to?: string) {
+  const labels = await getLabels(from, to);
+  if (labels.length === 0) {
+    console.log("No labels found in the date range.");
+    return;
+  }
+
+  // Column widths
+  const maxLabel = Math.max(5, ...labels.map((l) => l.fullLabel.length));
+  const header = `${"Label".padEnd(maxLabel)}  ${"Count".padStart(5)}  ${"First seen"}  ${"Last seen"}`;
+  console.log(header);
+  console.log("-".repeat(header.length));
+
+  for (const l of labels) {
+    console.log(
+      `${l.fullLabel.padEnd(maxLabel)}  ${String(l.count).padStart(5)}  ${l.firstSeen}  ${l.lastSeen}`
+    );
+  }
+}
+
 async function cmdStartSession(args: string[]) {
   const options: any = {};
   for (let i = 0; i < args.length; i++) {
@@ -200,6 +221,7 @@ Usage:
   lifeline-mcp summary [--week|--month|--from DATE --to DATE]
   lifeline-mcp day [DATE]          Full day timeline
   lifeline-mcp sessions [--week|--month|--from DATE --to DATE]
+  lifeline-mcp labels [--week|--month|--from DATE --to DATE]
   lifeline-mcp start [TITLE] [--emoji E] [--duration M] [--strict]
   lifeline-mcp stop                Stop current session/meeting
   lifeline-mcp break               Start a break
@@ -267,6 +289,18 @@ async function main() {
     case "sessions": {
       const range = parseDateRange(args.slice(1));
       await cmdSessions(range.from, range.to);
+      break;
+    }
+    case "labels": {
+      const range = parseDateRange(args.slice(1));
+      // Default to 90 days if no range flags given
+      const hasRangeFlag = args.slice(1).some((a) =>
+        ["--week", "--month", "--from", "--to"].includes(a)
+      );
+      await cmdLabels(
+        hasRangeFlag ? range.from : undefined,
+        hasRangeFlag ? range.to : undefined
+      );
       break;
     }
     case "start":

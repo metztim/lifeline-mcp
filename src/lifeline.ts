@@ -301,6 +301,116 @@ export async function startMeeting(options: {
   }
 }
 
+export async function editActivity(args: {
+  seconds: number;
+  on?: string;
+  title?: string;
+  emoji?: string;
+  starting?: string;
+  ending?: string;
+}): Promise<Record<string, any>> {
+  let script = `tell application "Lifeline" to edit activity seconds ${args.seconds}`;
+  if (args.on) script += ` on "${args.on}"`;
+  if (args.title) script += ` title "${args.title}"`;
+  if (args.emoji) script += ` emoji "${args.emoji}"`;
+  if (args.starting) script += ` starting "${args.starting}"`;
+  if (args.ending) script += ` ending "${args.ending}"`;
+  try {
+    const result = await runAppleScript(script);
+    return parseAppleScriptRecord(result);
+  } catch (e: any) {
+    return { error: e.message };
+  }
+}
+
+export async function addActivity(args: {
+  type: string;
+  starting: string;
+  ending: string;
+  on?: string;
+  title?: string;
+  emoji?: string;
+}): Promise<Record<string, any>> {
+  let script = `tell application "Lifeline" to add activity type "${args.type}" starting "${args.starting}" ending "${args.ending}"`;
+  if (args.on) script += ` on "${args.on}"`;
+  if (args.title) script += ` title "${args.title}"`;
+  if (args.emoji) script += ` emoji "${args.emoji}"`;
+  try {
+    const result = await runAppleScript(script);
+    return parseAppleScriptRecord(result);
+  } catch (e: any) {
+    return { error: e.message };
+  }
+}
+
+export async function deleteActivity(args: {
+  seconds: number;
+  on?: string;
+}): Promise<Record<string, any>> {
+  let script = `tell application "Lifeline" to delete activity seconds ${args.seconds}`;
+  if (args.on) script += ` on "${args.on}"`;
+  try {
+    const result = await runAppleScript(script);
+    return parseAppleScriptRecord(result);
+  } catch (e: any) {
+    return { error: e.message };
+  }
+}
+
+export interface LabelInfo {
+  emoji: string;
+  title: string;
+  fullLabel: string;
+  count: number;
+  firstSeen: string;  // YYYY-MM-DD
+  lastSeen: string;   // YYYY-MM-DD
+}
+
+const SESSION_STATES = new Set([
+  "inSession", "editedSession", "manualSession",
+  "inMeeting", "editedMeeting", "manualMeeting",
+]);
+
+export async function getLabels(
+  from?: string,
+  to?: string
+): Promise<LabelInfo[]> {
+  const toDate = to || localDateStr();
+  let fromDate = from;
+  if (!fromDate) {
+    const d = new Date();
+    d.setDate(d.getDate() - 90);
+    fromDate = localDateStr(d);
+  }
+
+  const days = await readRange(fromDate, toDate);
+  const map = new Map<string, { emoji: string; title: string; count: number; firstSeen: string; lastSeen: string }>();
+
+  for (const day of days) {
+    for (const node of day.nodes) {
+      if (!SESSION_STATES.has(node.state)) continue;
+      if (!node.title && !node.emoji) continue;
+
+      const emoji = node.emoji || "";
+      const title = node.title || "";
+      const fullLabel = [emoji, title].filter(Boolean).join("");
+
+      const existing = map.get(fullLabel);
+      if (existing) {
+        existing.count++;
+        if (day.date < existing.firstSeen) existing.firstSeen = day.date;
+        if (day.date > existing.lastSeen) existing.lastSeen = day.date;
+      } else {
+        map.set(fullLabel, { emoji, title, count: 1, firstSeen: day.date, lastSeen: day.date });
+      }
+    }
+  }
+
+  return Array.from(map.entries())
+    .map(([fullLabel, info]) => ({ fullLabel, ...info }))
+    .sort((a, b) => b.count - a.count);
+}
+
 // Basic AppleScript record parser (handles {key:value, key:value} format)
 function parseAppleScriptRecord(str: string): Record<string, any> {
   // AppleScript returns records like: {state:"session", label:"Deep work", elapsedSeconds:1500}
