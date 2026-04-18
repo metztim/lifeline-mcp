@@ -78,6 +78,17 @@ export function localDateStr(d: Date = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Parse HH:mm or HH:mm:ss to seconds since midnight. Throws on invalid input. */
+export function parseTimeToSeconds(hhmm: string): number {
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(hhmm.trim());
+  if (!m) throw new Error(`Invalid time "${hhmm}" — expected HH:mm or HH:mm:ss`);
+  const h = Number(m[1]);
+  const mm = Number(m[2]);
+  const ss = m[3] ? Number(m[3]) : 0;
+  if (h > 23 || mm > 59 || ss > 59) throw new Error(`Invalid time "${hhmm}" — out of range`);
+  return h * 3600 + mm * 60 + ss;
+}
+
 async function getActivityPath(): Promise<string> {
   try {
     await readdir(ACTIVITY_PATH);
@@ -313,8 +324,12 @@ export async function editActivity(args: {
   if (args.on) script += ` on "${args.on}"`;
   if (args.title) script += ` title "${args.title}"`;
   if (args.emoji) script += ` emoji "${args.emoji}"`;
-  if (args.starting) script += ` starting "${args.starting}"`;
-  if (args.ending) script += ` ending "${args.ending}"`;
+  try {
+    if (args.starting) script += ` starting ${parseTimeToSeconds(args.starting)}`;
+    if (args.ending) script += ` ending ${parseTimeToSeconds(args.ending)}`;
+  } catch (e: any) {
+    return { error: e.message };
+  }
   try {
     const result = await runAppleScript(script);
     return parseAppleScriptRecord(result);
@@ -331,7 +346,14 @@ export async function addActivity(args: {
   title?: string;
   emoji?: string;
 }): Promise<Record<string, any>> {
-  let script = `tell application "Lifeline" to add activity type "${args.type}" starting "${args.starting}" ending "${args.ending}"`;
+  let script: string;
+  try {
+    const startSec = parseTimeToSeconds(args.starting);
+    const endSec = parseTimeToSeconds(args.ending);
+    script = `tell application "Lifeline" to add activity type "${args.type}" starting ${startSec} ending ${endSec}`;
+  } catch (e: any) {
+    return { error: e.message };
+  }
   if (args.on) script += ` on "${args.on}"`;
   if (args.title) script += ` title "${args.title}"`;
   if (args.emoji) script += ` emoji "${args.emoji}"`;
@@ -409,6 +431,289 @@ export async function getLabels(
   return Array.from(map.entries())
     .map(([fullLabel, info]) => ({ fullLabel, ...info }))
     .sort((a, b) => b.count - a.count);
+}
+
+// Active states: any state where the user is doing something (not idle)
+const ACTIVE_STATES = new Set([
+  "inSession", "editedSession", "manualSession",
+  "inMeeting", "editedMeeting", "manualMeeting",
+  "sports", "meditation", "sleep",
+]);
+
+const SESSION_ONLY_STATES = new Set([
+  "inSession", "editedSession", "manualSession",
+]);
+
+const MEETING_ONLY_STATES = new Set([
+  "inMeeting", "editedMeeting", "manualMeeting",
+]);
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+export interface AnalyticsResult {
+  period: { from: string; to: string; totalDays: number; daysWithData: number };
+  totals: {
+    sessionMinutes: number;
+    meetingMinutes: number;
+    activeMinutes: number;
+    pomodoroCount: number;
+  };
+  dailyAverages: {
+    sessionMinutes: number;
+    meetingMinutes: number;
+    activeMinutes: number;
+    pomodoros: number;
+  };
+  hourlyDistribution: Record<number, number>; // hour (0-23) -> total active minutes
+  labelBreakdown: { label: string; minutes: number; percentage: number }[];
+  dayOfWeekBreakdown: Record<string, number>; // day name -> avg active minutes
+  streaks: { current: number; longest: number };
+}
+
+function computeNodeDurations(nodes: ActivityNode[]) {
+  const results: { state: string; seconds: number; durationSeconds: number; emoji?: string; title?: string }[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    const nextSeconds = i + 1 < nodes.length ? nodes[i + 1].seconds : node.seconds;
+    const duration = nextSeconds - node.seconds;
+    if (duration > 0) {
+      results.push({
+        state: node.state,
+        seconds: node.seconds,
+        durationSeconds: duration,
+        ...(node.emoji && { emoji: node.emoji }),
+        ...(node.title && { title: node.title }),
+      });
+    }
+  }
+  return results;
+}
+
+export async function computeAnalytics(from: string, to: string): Promise<AnalyticsResult> {
+  const days = await readRange(from, to);
+
+  // Count total calendar days in range
+  const [fy, fm, fd] = from.split("-").map(Number);
+  const [ty, tm, td] = to.split("-").map(Number);
+  const startDate = new Date(fy, fm - 1, fd, 12);
+  const endDate = new Date(ty, tm - 1, td, 12);
+  const totalDays = Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1;
+
+  let sessionSeconds = 0;
+  let meetingSeconds = 0;
+  let activeSeconds = 0;
+  let pomodoroCount = 0;
+
+  const hourlyMinutes: Record<number, number> = {};
+  for (let h = 0; h < 24; h++) hourlyMinutes[h] = 0;
+
+  const labelMinutes: Record<string, number> = {};
+  const dayOfWeekSeconds: Record<string, number[]> = {};
+  for (const name of DAY_NAMES) dayOfWeekSeconds[name] = [];
+
+  // Track which dates have sessions for streak calculation
+  const datesWithSessions = new Set<string>();
+
+  for (const day of days) {
+    // Pomodoro count
+    for (const m of day.milestones) {
+      if (m.type === "pomodoro") pomodoroCount++;
+    }
+
+    const durations = computeNodeDurations(day.nodes);
+    let dayActiveSeconds = 0;
+
+    for (const d of durations) {
+      const isSession = SESSION_ONLY_STATES.has(d.state);
+      const isMeeting = MEETING_ONLY_STATES.has(d.state);
+      const isActive = ACTIVE_STATES.has(d.state);
+
+      if (isSession) sessionSeconds += d.durationSeconds;
+      if (isMeeting) meetingSeconds += d.durationSeconds;
+      if (isActive) {
+        activeSeconds += d.durationSeconds;
+        dayActiveSeconds += d.durationSeconds;
+
+        // Track sessions for streaks
+        if (isSession || isMeeting) datesWithSessions.add(day.date);
+
+        // Hourly distribution: spread duration across hours
+        let remaining = d.durationSeconds;
+        let currentSecond = d.seconds;
+        while (remaining > 0) {
+          const hour = Math.floor(currentSecond / 3600) % 24;
+          const secondsUntilNextHour = 3600 - (currentSecond % 3600);
+          const chunk = Math.min(remaining, secondsUntilNextHour);
+          hourlyMinutes[hour] += chunk / 60;
+          currentSecond += chunk;
+          remaining -= chunk;
+        }
+
+        // Label breakdown (sessions/meetings with labels)
+        if ((isSession || isMeeting) && (d.title || d.emoji)) {
+          const label = [d.emoji, d.title].filter(Boolean).join("");
+          labelMinutes[label] = (labelMinutes[label] || 0) + d.durationSeconds / 60;
+        }
+      }
+    }
+
+    // Day-of-week breakdown
+    const [dy, dm, dd] = day.date.split("-").map(Number);
+    const dayDate = new Date(dy, dm - 1, dd);
+    const dayName = DAY_NAMES[dayDate.getDay()];
+    dayOfWeekSeconds[dayName].push(dayActiveSeconds);
+  }
+
+  // Compute streaks
+  let currentStreak = 0;
+  let longestStreak = 0;
+  let tempStreak = 0;
+
+  // Walk all calendar days in range
+  const cursor = new Date(startDate);
+  const allDates: string[] = [];
+  while (cursor <= endDate) {
+    allDates.push(localDateStr(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  for (const dateStr of allDates) {
+    if (datesWithSessions.has(dateStr)) {
+      tempStreak++;
+      if (tempStreak > longestStreak) longestStreak = tempStreak;
+    } else {
+      tempStreak = 0;
+    }
+  }
+
+  // Current streak: count backwards from end of range
+  for (let i = allDates.length - 1; i >= 0; i--) {
+    if (datesWithSessions.has(allDates[i])) {
+      currentStreak++;
+    } else {
+      break;
+    }
+  }
+
+  const daysWithData = days.length;
+  const avgDivisor = daysWithData || 1;
+
+  // Label breakdown with percentages
+  const totalActiveMinutes = activeSeconds / 60;
+  const labelBreakdown = Object.entries(labelMinutes)
+    .map(([label, minutes]) => ({
+      label,
+      minutes: Math.round(minutes),
+      percentage: totalActiveMinutes > 0 ? Math.round((minutes / totalActiveMinutes) * 1000) / 10 : 0,
+    }))
+    .sort((a, b) => b.minutes - a.minutes);
+
+  // Day-of-week averages
+  const dayOfWeekBreakdown: Record<string, number> = {};
+  for (const name of DAY_NAMES) {
+    const vals = dayOfWeekSeconds[name];
+    dayOfWeekBreakdown[name] = vals.length > 0
+      ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length / 60)
+      : 0;
+  }
+
+  // Round hourly distribution
+  for (const h of Object.keys(hourlyMinutes)) {
+    hourlyMinutes[Number(h)] = Math.round(hourlyMinutes[Number(h)]);
+  }
+
+  return {
+    period: { from, to, totalDays, daysWithData },
+    totals: {
+      sessionMinutes: Math.round(sessionSeconds / 60),
+      meetingMinutes: Math.round(meetingSeconds / 60),
+      activeMinutes: Math.round(activeSeconds / 60),
+      pomodoroCount,
+    },
+    dailyAverages: {
+      sessionMinutes: Math.round(sessionSeconds / 60 / avgDivisor),
+      meetingMinutes: Math.round(meetingSeconds / 60 / avgDivisor),
+      activeMinutes: Math.round(activeSeconds / 60 / avgDivisor),
+      pomodoros: Math.round((pomodoroCount / avgDivisor) * 10) / 10,
+    },
+    hourlyDistribution: hourlyMinutes,
+    labelBreakdown,
+    dayOfWeekBreakdown,
+    streaks: { current: currentStreak, longest: longestStreak },
+  };
+}
+
+export interface PeriodComparison {
+  period1: { from: string; to: string; stats: AnalyticsResult };
+  period2: { from: string; to: string; stats: AnalyticsResult };
+  changes: {
+    sessionMinutes: { value: number; percentage: number };
+    meetingMinutes: { value: number; percentage: number };
+    activeMinutes: { value: number; percentage: number };
+    pomodoroCount: { value: number; percentage: number };
+    dailyAvgSession: { value: number; percentage: number };
+    dailyAvgMeeting: { value: number; percentage: number };
+    dailyAvgActive: { value: number; percentage: number };
+    dailyAvgPomodoros: { value: number; percentage: number };
+  };
+  labelComparison: {
+    label: string;
+    period1Minutes: number;
+    period2Minutes: number;
+    change: number;
+  }[];
+}
+
+function pctChange(old: number, now: number): number {
+  if (old === 0) return now === 0 ? 0 : 100;
+  return Math.round(((now - old) / old) * 1000) / 10;
+}
+
+export async function comparePeriods(
+  p1Start: string, p1End: string,
+  p2Start: string, p2End: string,
+): Promise<PeriodComparison> {
+  const [stats1, stats2] = await Promise.all([
+    computeAnalytics(p1Start, p1End),
+    computeAnalytics(p2Start, p2End),
+  ]);
+
+  const t1 = stats1.totals;
+  const t2 = stats2.totals;
+  const a1 = stats1.dailyAverages;
+  const a2 = stats2.dailyAverages;
+
+  const changes = {
+    sessionMinutes: { value: t2.sessionMinutes - t1.sessionMinutes, percentage: pctChange(t1.sessionMinutes, t2.sessionMinutes) },
+    meetingMinutes: { value: t2.meetingMinutes - t1.meetingMinutes, percentage: pctChange(t1.meetingMinutes, t2.meetingMinutes) },
+    activeMinutes: { value: t2.activeMinutes - t1.activeMinutes, percentage: pctChange(t1.activeMinutes, t2.activeMinutes) },
+    pomodoroCount: { value: t2.pomodoroCount - t1.pomodoroCount, percentage: pctChange(t1.pomodoroCount, t2.pomodoroCount) },
+    dailyAvgSession: { value: a2.sessionMinutes - a1.sessionMinutes, percentage: pctChange(a1.sessionMinutes, a2.sessionMinutes) },
+    dailyAvgMeeting: { value: a2.meetingMinutes - a1.meetingMinutes, percentage: pctChange(a1.meetingMinutes, a2.meetingMinutes) },
+    dailyAvgActive: { value: a2.activeMinutes - a1.activeMinutes, percentage: pctChange(a1.activeMinutes, a2.activeMinutes) },
+    dailyAvgPomodoros: { value: a2.pomodoros - a1.pomodoros, percentage: pctChange(a1.pomodoros, a2.pomodoros) },
+  };
+
+  // Label comparison: union of all labels from both periods
+  const allLabels = new Set<string>();
+  for (const l of stats1.labelBreakdown) allLabels.add(l.label);
+  for (const l of stats2.labelBreakdown) allLabels.add(l.label);
+
+  const p1LabelMap = new Map(stats1.labelBreakdown.map(l => [l.label, l.minutes]));
+  const p2LabelMap = new Map(stats2.labelBreakdown.map(l => [l.label, l.minutes]));
+
+  const labelComparison = Array.from(allLabels).map(label => {
+    const p1Min = p1LabelMap.get(label) || 0;
+    const p2Min = p2LabelMap.get(label) || 0;
+    return { label, period1Minutes: p1Min, period2Minutes: p2Min, change: p2Min - p1Min };
+  }).sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+
+  return {
+    period1: { from: p1Start, to: p1End, stats: stats1 },
+    period2: { from: p2Start, to: p2End, stats: stats2 },
+    changes,
+    labelComparison,
+  };
 }
 
 // Basic AppleScript record parser (handles {key:value, key:value} format)

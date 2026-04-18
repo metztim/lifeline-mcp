@@ -22,6 +22,8 @@ import {
   addActivity,
   deleteActivity,
   localDateStr,
+  computeAnalytics,
+  comparePeriods,
 } from "./lifeline.js";
 
 const server = new Server(
@@ -226,6 +228,52 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["seconds"],
       },
     },
+    {
+      name: "get_analytics",
+      description:
+        "Compute detailed productivity analytics for a date range: totals, daily averages, hourly distribution (when you're most active), label breakdown, day-of-week patterns, and streak data.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          starting: {
+            type: "string",
+            description: "Start date (YYYY-MM-DD).",
+          },
+          ending: {
+            type: "string",
+            description: "End date (YYYY-MM-DD).",
+          },
+        },
+        required: ["starting", "ending"],
+      },
+    },
+    {
+      name: "compare_periods",
+      description:
+        "Compare two date ranges side by side: session time, meeting time, pomodoros, daily averages, and label distribution with percentage changes between periods.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          period1_start: {
+            type: "string",
+            description: "Period 1 start date (YYYY-MM-DD).",
+          },
+          period1_end: {
+            type: "string",
+            description: "Period 1 end date (YYYY-MM-DD).",
+          },
+          period2_start: {
+            type: "string",
+            description: "Period 2 start date (YYYY-MM-DD).",
+          },
+          period2_end: {
+            type: "string",
+            description: "Period 2 end date (YYYY-MM-DD).",
+          },
+        },
+        required: ["period1_start", "period1_end", "period2_start", "period2_end"],
+      },
+    },
   ],
 }));
 
@@ -329,6 +377,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         on: args?.on as string | undefined,
       });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case "get_analytics": {
+      const analytics = await computeAnalytics(
+        args?.starting as string,
+        args?.ending as string,
+      );
+      return { content: [{ type: "text", text: JSON.stringify(analytics, null, 2) }] };
+    }
+
+    case "compare_periods": {
+      const comparison = await comparePeriods(
+        args?.period1_start as string,
+        args?.period1_end as string,
+        args?.period2_start as string,
+        args?.period2_end as string,
+      );
+      return { content: [{ type: "text", text: JSON.stringify(comparison, null, 2) }] };
     }
 
     default:
