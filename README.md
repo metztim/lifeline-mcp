@@ -6,10 +6,12 @@ Read your session history, break patterns, and pomodoro stats from any AI tool (
 
 ## Quick start
 
+Installed directly from GitHub via `npx`. No separate npm registry package — the tool name `lifeline-mcp` is taken on npm by an unrelated project.
+
 ### Claude Code (one command)
 
 ```bash
-claude mcp add lifeline -- npx lifeline-mcp
+claude mcp add lifeline -- npx -y github:metztim/lifeline-mcp
 ```
 
 That's it. Claude Code can now read your Lifeline data and control sessions.
@@ -23,7 +25,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "mcpServers": {
     "lifeline": {
       "command": "npx",
-      "args": ["lifeline-mcp"]
+      "args": ["-y", "github:metztim/lifeline-mcp"]
     }
   }
 }
@@ -33,12 +35,12 @@ Restart Claude Desktop after saving.
 
 ### Other AI tools
 
-Any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io) can use this server. Point it at `npx lifeline-mcp`.
+Any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io) can use this server. Point it at `npx -y github:metztim/lifeline-mcp`.
 
 ### CLI only
 
 ```bash
-npm install -g lifeline-mcp
+npm install -g github:metztim/lifeline-mcp
 ```
 
 ## What you can do

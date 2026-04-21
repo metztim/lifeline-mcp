@@ -11,7 +11,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "prepare": "tsc"
   },
   "keywords": ["mcp", "lifeline", "productivity", "pomodoro"],
   "license": "MIT",
