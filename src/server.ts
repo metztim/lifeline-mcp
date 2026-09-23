@@ -10,6 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   getStatus,
+  getSignOff,
   readDay,
   readRange,
   computeSummary,
@@ -37,6 +38,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "get_status",
       description:
         "Get Lifeline's current status: whether you're in a session, meeting, break, or idle. Includes current session label/emoji, elapsed time, break debt, and today's pomodoro count.",
+      inputSchema: { type: "object" as const, properties: {} },
+    },
+    {
+      name: "get_sign_off",
+      description:
+        "Get the user's sign-off commitment for today. Returns whether the daily sign-off ritual is enabled, whether they've committed to a stop time today, the chosen stop/lock/release times, and whether the screen lock is currently engaged. Useful for morning briefs that surface today's planned end-of-day.",
       inputSchema: { type: "object" as const, properties: {} },
     },
     {
@@ -284,6 +291,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case "get_status": {
       const status = await getStatus();
       return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };
+    }
+
+    case "get_sign_off": {
+      const signOff = await getSignOff();
+      return { content: [{ type: "text", text: JSON.stringify(signOff, null, 2) }] };
     }
 
     case "get_day": {

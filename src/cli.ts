@@ -2,6 +2,7 @@
 
 import {
   getStatus,
+  getSignOff,
   readDay,
   readRange,
   computeSummary,
@@ -10,6 +11,7 @@ import {
   stopSession,
   startBreak,
   startMeeting,
+  addActivity,
   localDateStr,
 } from "./lifeline.js";
 
@@ -45,6 +47,34 @@ async function cmdStatus() {
   console.log(`Pomodoros: ${status.pomodoroCount || 0}`);
   console.log(`Session time: ${formatSeconds(status.sessionSeconds || 0)}`);
   console.log(`Meeting time: ${formatSeconds(status.meetingSeconds || 0)}`);
+}
+
+async function cmdSignOff() {
+  const signOff = await getSignOff();
+  if (signOff.error) {
+    console.error(signOff.error);
+    process.exit(1);
+  }
+
+  if (!signOff.enabled) {
+    console.log("Sign off: disabled");
+    return;
+  }
+  if (signOff.committedToday) {
+    console.log(`Sign off: committed for today`);
+    console.log(`Stop time: ${signOff.stopTime}`);
+    console.log(`Lock at: ${signOff.lockTime} (grace ${signOff.graceMin} min)`);
+    // Duration-mode releases can land the same evening; only the classic
+    // next-morning mode gets the "tomorrow" wording.
+    const releaseSuffix = signOff.releaseMode === "afterDuration" ? "" : " tomorrow";
+    console.log(`Releases: ${signOff.releaseTime}${releaseSuffix}`);
+    if (signOff.lockEngaged) {
+      console.log(`Lock engaged at: ${signOff.lockEngagedAt}`);
+    }
+  } else {
+    console.log("Sign off: enabled, no commitment yet today");
+    console.log(`Default stop: ${signOff.stopTime}`);
+  }
 }
 
 async function cmdSummary(from: string, to: string) {
@@ -159,7 +189,9 @@ async function cmdStartSession(args: string[]) {
       case "--duration": options.duration = parseInt(args[++i]); break;
       case "--strict": options.strict = true; break;
       default:
-        // Positional: treat as title
+        // Unknown flags (incl. --help) must never become a session title —
+        // that silently starts a session named "--help".
+        rejectUnknownFlag("start", args[i]);
         if (!options.title) options.title = args[i];
     }
   }
@@ -199,6 +231,7 @@ async function cmdStartMeeting(args: string[]) {
       case "--emoji": options.emoji = args[++i]; break;
       case "--duration": options.duration = parseInt(args[++i]); break;
       default:
+        rejectUnknownFlag("meeting", args[i]);
         if (!options.title) options.title = args[i];
     }
   }
@@ -212,12 +245,53 @@ async function cmdStartMeeting(args: string[]) {
   );
 }
 
+async function cmdAddActivity(args: string[]) {
+  const options: any = { type: "session" };
+  for (let i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case "--type": options.type = args[++i]; break;
+      case "--date": options.on = args[++i]; break;
+      case "--from": options.starting = args[++i]; break;
+      case "--to": options.ending = args[++i]; break;
+      case "--title": options.title = args[++i]; break;
+      case "--emoji": options.emoji = args[++i]; break;
+      default:
+        rejectUnknownFlag("add", args[i]);
+        if (!options.title) options.title = args[i];
+    }
+  }
+  if (!options.starting || !options.ending) {
+    console.error("add requires --from HH:mm and --to HH:mm");
+    process.exit(1);
+  }
+  const result = await addActivity(options);
+  if (result.error) {
+    console.error(result.error);
+    process.exit(1);
+  }
+  console.log(
+    `Added ${options.type} ${options.starting}-${options.ending}` +
+      `${options.on ? ` on ${options.on}` : ""}` +
+      `${options.title ? `: ${options.emoji || ""}${options.title}` : ""}`
+  );
+}
+
+// Exit with usage when a subcommand receives an unrecognized flag. Bare
+// words are allowed (they become the title); dash-prefixed ones are not.
+function rejectUnknownFlag(command: string, arg: string) {
+  if (!arg.startsWith("-")) return;
+  console.error(`Unknown flag for ${command}: ${arg}\n`);
+  printUsage();
+  process.exit(1);
+}
+
 function printUsage() {
   console.log(`lifeline-mcp - Lifeline productivity tracker CLI & MCP server
 
 Usage:
   lifeline-mcp                     Start MCP server (stdio)
   lifeline-mcp status              Current status
+  lifeline-mcp sign-off            Today's sign-off commitment
   lifeline-mcp summary [--week|--month|--from DATE --to DATE]
   lifeline-mcp day [DATE]          Full day timeline
   lifeline-mcp sessions [--week|--month|--from DATE --to DATE]
@@ -226,6 +300,7 @@ Usage:
   lifeline-mcp stop                Stop current session/meeting
   lifeline-mcp break               Start a break
   lifeline-mcp meeting [TITLE] [--emoji E] [--duration M]
+  lifeline-mcp add [TITLE] --from HH:mm --to HH:mm [--date DATE] [--type session|meeting] [--emoji E]
 
 Date format: YYYY-MM-DD. Defaults to today.`);
 }
@@ -276,6 +351,10 @@ async function main() {
     case "status":
       await cmdStatus();
       break;
+    case "sign-off":
+    case "signoff":
+      await cmdSignOff();
+      break;
     case "summary": {
       const range = parseDateRange(args.slice(1));
       await cmdSummary(range.from, range.to);
@@ -314,6 +393,9 @@ async function main() {
       break;
     case "meeting":
       await cmdStartMeeting(args.slice(1));
+      break;
+    case "add":
+      await cmdAddActivity(args.slice(1));
       break;
     case "help":
     case "--help":

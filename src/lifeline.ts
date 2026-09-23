@@ -89,13 +89,226 @@ export function parseTimeToSeconds(hhmm: string): number {
   return h * 3600 + mm * 60 + ss;
 }
 
-async function getActivityPath(): Promise<string> {
+function isPermissionError(e: any): boolean {
+  return e?.code === "EPERM" || e?.code === "EACCES";
+}
+
+// macOS guards other apps' sandbox containers, so a host without Full Disk
+// Access gets EPERM. Returns null then; callers ask the running app instead.
+// Never falls back to the dev path in that case, since it holds stale data.
+async function getActivityPath(): Promise<string | null> {
   try {
     await readdir(ACTIVITY_PATH);
     return ACTIVITY_PATH;
-  } catch {
+  } catch (e: any) {
+    if (isPermissionError(e)) return null;
     return DEV_ACTIVITY_PATH;
   }
+}
+
+// MARK: - Reading history through the app
+
+// The app's scripting results name states and milestones by their display text.
+const STATE_FROM_APP: Record<string, string> = {
+  "Untracked screen time": "active",
+  "Break": "idle",
+  "Session": "inSession",
+  "Manual session": "manualSession",
+  "Meeting": "inMeeting",
+  "Manual meeting": "manualMeeting",
+  "Sports": "sports",
+  "Meditation": "meditation",
+  "Sleep": "sleep",
+};
+
+const MILESTONE_FROM_APP: Record<string, string> = {
+  "Pomodoro": "pomodoro",
+  "Deprecated": "deprecated",
+  "Recommended break time": "palmtree",
+  "Perfect Pomodoro": "perfectPomodoro",
+  "Halfway Pomodoro": "halfwayPomodoro",
+  "Custom cycle": "customCycle",
+};
+
+/**
+ * Parse a Swift collection description, e.g. `[["seconds": 0, "state": "Break"]]`.
+ * The app's scripting bridge sends nested arrays and dictionaries in this form.
+ */
+export function parseSwiftLiteral(src: string): any {
+  let i = 0;
+  const token = /-?\d+(?:\.\d+)?|true|false/y;
+
+  const skipSpace = () => {
+    while (i < src.length && /\s/.test(src[i])) i++;
+  };
+  const fail = (): never => {
+    throw new Error(`Unexpected Lifeline data near "${src.slice(i, i + 30)}"`);
+  };
+  const expect = (c: string) => {
+    skipSpace();
+    if (src[i] !== c) fail();
+    i++;
+  };
+
+  const readString = (): string => {
+    i++; // opening quote
+    let out = "";
+    while (i < src.length && src[i] !== '"') {
+      if (src[i] !== "\\") {
+        out += src[i++];
+        continue;
+      }
+      const esc = src[i + 1];
+      i += 2;
+      if (esc === "u") {
+        const end = src.indexOf("}", i);
+        if (src[i] !== "{" || end === -1) fail();
+        out += String.fromCodePoint(parseInt(src.slice(i + 1, end), 16));
+        i = end + 1;
+      } else {
+        const simple: Record<string, string> = { n: "\n", t: "\t", r: "\r", "0": "\0" };
+        out += simple[esc] ?? esc;
+      }
+    }
+    if (src[i] !== '"') fail();
+    i++;
+    return out;
+  };
+
+  const readCollection = (): any => {
+    i++; // opening bracket
+    skipSpace();
+    if (src[i] === "]") {
+      i++;
+      return [];
+    }
+    if (src[i] === ":") {
+      i++;
+      expect("]");
+      return {};
+    }
+    const first = readValue();
+    skipSpace();
+    if (src[i] === ":") {
+      i++;
+      const dict: Record<string, any> = { [String(first)]: readValue() };
+      skipSpace();
+      while (src[i] === ",") {
+        i++;
+        const key = readValue();
+        expect(":");
+        dict[String(key)] = readValue();
+        skipSpace();
+      }
+      expect("]");
+      return dict;
+    }
+    const list = [first];
+    while (src[i] === ",") {
+      i++;
+      list.push(readValue());
+      skipSpace();
+    }
+    expect("]");
+    return list;
+  };
+
+  const readValue = (): any => {
+    skipSpace();
+    if (src[i] === "[") return readCollection();
+    if (src[i] === '"') return readString();
+    token.lastIndex = i;
+    const m = token.exec(src);
+    if (!m) fail();
+    i = token.lastIndex;
+    const t = m![0];
+    return t === "true" ? true : t === "false" ? false : Number(t);
+  };
+
+  const result = readValue();
+  skipSpace();
+  if (i !== src.length) fail();
+  return result;
+}
+
+// Newer app versions send nested values as JSON; older ones as Swift descriptions.
+function parseNested(v: any): any {
+  if (typeof v !== "string") return v || [];
+  try {
+    return JSON.parse(v);
+  } catch {
+    return parseSwiftLiteral(v);
+  }
+}
+
+function parseAppDay(raw: Record<string, any>): DayActivity {
+  const list = parseNested;
+
+  const nodes: ActivityNode[] = list(raw.nodes).map((n: any) => ({
+    seconds: n.seconds,
+    state: STATE_FROM_APP[n.state] || `unknown(${n.state})`,
+    ...(n.emoji && { emoji: n.emoji }),
+    ...(n.title && { title: n.title }),
+  }));
+  // Nodes come out of a dictionary per node but in day order; keep them sorted anyway.
+  nodes.sort((a, b) => a.seconds - b.seconds);
+
+  const milestones: Milestone[] = list(raw.milestones)
+    .map((m: any) => ({
+      seconds: m.seconds,
+      type: MILESTONE_FROM_APP[m.type] || `unknown(${m.type})`,
+    }))
+    .sort((a: Milestone, b: Milestone) => a.seconds - b.seconds);
+
+  const activePeriods: ActivePeriod[] = list(raw.activePeriods).map((p: any) => ({
+    start: p.start,
+    end: p.end,
+  }));
+
+  return { date: raw.date, nodes, milestones, activePeriods };
+}
+
+// JXA returns the app's record as a real object, which JSON.stringify can pass back.
+async function runJXA(script: string, args: string[]): Promise<any> {
+  try {
+    const { stdout } = await exec("osascript", ["-l", "JavaScript", "-e", script, ...args], {
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return JSON.parse(stdout);
+  } catch (e: any) {
+    throw new Error(
+      `macOS blocks reading Lifeline's data folder directly, and asking the Lifeline app failed: ` +
+        `${(e.stderr || e.message || "").trim()}`
+    );
+  }
+}
+
+// Apple Event error the app raises for a date it has no data for
+const NO_SUCH_OBJECT = "(-1728)";
+
+async function readDayFromApp(dateStr: string): Promise<DayActivity | null> {
+  let raw: any;
+  try {
+    raw = await runJXA(
+      'function run(argv) { return JSON.stringify(Application("Lifeline").fetchDay(argv[0])) }',
+      [dateStr]
+    );
+  } catch (e: any) {
+    if (e.message.includes(NO_SUCH_OBJECT)) return null;
+    throw e;
+  }
+  // Older app versions answer with today instead of an error for a date without data.
+  if (raw.date !== dateStr) return null;
+  return parseAppDay(raw);
+}
+
+async function readRangeFromApp(from: string, to: string): Promise<DayActivity[]> {
+  const raw = await runJXA(
+    'function run(argv) { return JSON.stringify(Application("Lifeline").fetchRange({ starting: argv[0], ending: argv[1] })) }',
+    [from, to]
+  );
+  const days: any[] = parseNested(raw.days);
+  return days.map(parseAppDay).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function parseRawDay(raw: any): DayActivity {
@@ -131,24 +344,31 @@ function parseRawDay(raw: any): DayActivity {
 
 export async function readDay(dateStr: string): Promise<DayActivity | null> {
   const basePath = await getActivityPath();
+  if (basePath === null) return readDayFromApp(dateStr);
   const [year, month, day] = dateStr.split("-");
   const filePath = join(basePath, year, month, day);
 
+  let text: string;
   try {
-    const raw = JSON.parse(await readFile(filePath, "utf-8"));
-    const result = parseRawDay(raw);
-    // Use file path date (always correct) over stored CF timestamp (timezone issues)
-    result.date = dateStr;
-    return result;
-  } catch {
-    return null;
+    text = await readFile(filePath, "utf-8");
+  } catch (e: any) {
+    if (e.code === "ENOENT") return null;
+    if (isPermissionError(e)) return readDayFromApp(dateStr);
+    throw e;
   }
+  const result = parseRawDay(JSON.parse(text));
+  // Use file path date (always correct) over stored CF timestamp (timezone issues)
+  result.date = dateStr;
+  return result;
 }
 
 export async function readRange(
   from: string,
   to: string
 ): Promise<DayActivity[]> {
+  // One round trip to the app instead of one per day
+  if ((await getActivityPath()) === null) return readRangeFromApp(from, to);
+
   const days: DayActivity[] = [];
   // Parse as local dates (noon avoids DST edge cases)
   const [fy, fm, fd] = from.split("-").map(Number);
@@ -250,6 +470,16 @@ export async function getStatus(): Promise<Record<string, any>> {
     return parseAppleScriptRecord(result);
   } catch (e: any) {
     // Lifeline not running or no AppleScript support
+    return { error: `Could not connect to Lifeline: ${e.message}` };
+  }
+}
+
+export async function getSignOff(): Promise<Record<string, any>> {
+  const script = 'tell application "Lifeline" to fetch sign-off';
+  try {
+    const result = await runAppleScript(script);
+    return parseAppleScriptRecord(result);
+  } catch (e: any) {
     return { error: `Could not connect to Lifeline: ${e.message}` };
   }
 }

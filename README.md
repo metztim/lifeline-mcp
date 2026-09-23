@@ -97,7 +97,7 @@ lifeline meeting "Standup" --emoji 📞 --duration 30
 
 ## How it works
 
-**Reading data:** Reads Lifeline's activity JSON files directly from the app's sandbox container (`~/Library/Containers/com.saent.lifeline/`). No network requests, no API keys — your data stays local.
+**Reading data:** Reads Lifeline's activity JSON files directly from the app's sandbox container (`~/Library/Containers/com.saent.lifeline/`). When macOS blocks that folder (recent macOS versions do, unless the app running the MCP server has Full Disk Access), it asks the running Lifeline app for the same history over AppleScript instead. No network requests and no API keys: your data stays local.
 
 **Controlling Lifeline:** Write commands (start, stop, break, meeting) use AppleScript to communicate with the running Lifeline app. Lifeline must be running for these commands to work.
 
