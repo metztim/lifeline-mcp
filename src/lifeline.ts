@@ -268,8 +268,23 @@ function parseAppDay(raw: Record<string, any>): DayActivity {
   return { date: raw.date, nodes, milestones, activePeriods };
 }
 
+// An Apple Event to a closed app launches it, so a scheduled read (a background agent asking
+// for a day) would open Lifeline on Tim's screen. Every call checks first and never launches.
+// `is running` is the one query that doesn't start the app.
+export class LifelineNotRunning extends Error {
+  constructor() {
+    super("Lifeline isn't running. Open Lifeline and try again; this tool never starts it.");
+  }
+}
+
+async function ensureLifelineRunning(): Promise<void> {
+  const { stdout } = await exec("osascript", ["-e", 'application id "com.saent.lifeline" is running']);
+  if (stdout.trim() !== "true") throw new LifelineNotRunning();
+}
+
 // JXA returns the app's record as a real object, which JSON.stringify can pass back.
 async function runJXA(script: string, args: string[]): Promise<any> {
+  await ensureLifelineRunning();
   try {
     const { stdout } = await exec("osascript", ["-l", "JavaScript", "-e", script, ...args], {
       maxBuffer: 64 * 1024 * 1024,
@@ -459,6 +474,7 @@ export function computeSummary(days: DayActivity[]) {
 
 // AppleScript bridge for real-time commands
 async function runAppleScript(script: string): Promise<string> {
+  await ensureLifelineRunning();
   const { stdout } = await exec("osascript", ["-e", script]);
   return stdout.trim();
 }
